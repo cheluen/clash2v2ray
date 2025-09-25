@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
             type: 'none',
             host: '',
             path: proxy.wsPath || '',
-            tls: proxy.tls ? '' : 'tls',
+            tls: proxy.tls ? 'tls' : '',
           };
           const vmessStr = JSON.stringify(vmessConfig);
           const base64 = Buffer.from(vmessStr).toString('base64');
@@ -70,7 +70,8 @@ export async function POST(request: NextRequest) {
           // Shadowsocks/SSR转换到标准SS (忽略SSR的obfs/protocol)
           const methodPassword = `${proxy.cipher}:${proxy.password}`;
           const base64Auth = Buffer.from(methodPassword, 'utf8').toString('base64');
-          const ssStr = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${proxy.name}`;
+          const encodedName = encodeURIComponent(proxy.name);
+          const ssStr = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${encodedName}`;
           v2rayNodes.push(ssStr);
         }
         // 可以添加更多类型如trojan, vless等
@@ -99,32 +100,48 @@ export async function POST(request: NextRequest) {
               cipher: 'auto',
               network: decoded.net || 'tcp',
               wsPath: decoded.path,
-              tls: decoded.tls === '',
+              tls: decoded.tls === 'tls',
             };
             proxies.push(proxy);
           } catch (e) {
             continue;
           }
         } else if (line.startsWith('ss://')) {
-          // Shadowsocks解析简化
-          // 假设格式 base64(name:method:password)@server:port
-          const parts = line.slice(5).split('@');
-          if (parts.length === 2) {
-            const configPart = parts[0];
-            const serverPart = parts[1];
-            const [server, port] = serverPart.split(':');
-            const decoded = Buffer.from(configPart, 'base64').toString();
-            const [name, method, ...passwordParts] = decoded.split(':');
-            const password = passwordParts.join(':');
-            const proxy: Proxy = {
-              name: name || 'Unnamed',
-              type: 'ss',
-              server,
-              port: parseInt(port),
-              cipher: method,
-              password,
-            };
-            proxies.push(proxy);
+          // Shadowsocks解析 (标准格式: ss://base64(method:password)@server:port#name)
+          const uri = line.slice(5);
+          const hashIndex = uri.indexOf('#');
+          let name = 'Unnamed';
+          let serverPart = uri;
+          if (hashIndex !== -1) {
+            name = decodeURIComponent(uri.slice(hashIndex + 1));
+            serverPart = uri.slice(0, hashIndex);
+          }
+          const atIndex = serverPart.indexOf('@');
+          if (atIndex !== -1) {
+            const configPart = serverPart.slice(0, atIndex);
+            const serverPort = serverPart.slice(atIndex + 1);
+            const [server, portStr] = serverPort.split(':');
+            if (server && portStr) {
+              try {
+                const decoded = Buffer.from(configPart, 'base64').toString('utf8');
+                const colonIndex = decoded.indexOf(':');
+                if (colonIndex !== -1) {
+                  const method = decoded.slice(0, colonIndex);
+                  const password = decoded.slice(colonIndex + 1);
+                  const proxy: Proxy = {
+                    name,
+                    type: 'ss',
+                    server,
+                    port: parseInt(portStr, 10),
+                    cipher: method,
+                    password,
+                  };
+                  proxies.push(proxy);
+                }
+              } catch (e) {
+                continue;
+              }
+            }
           }
         }
         // 可以添加更多类型

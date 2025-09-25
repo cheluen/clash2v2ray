@@ -5,69 +5,16 @@ import yaml from 'js-yaml';
 
 interface Proxy {
   name: string;
-  type: string; // vmess, ss, ssr, trojan, vless, snell, hysteria2, hy2, shadowsocks
+  type: string; // ss, vmess, vless, hy2, tuic
   server: string;
   port: number;
+  password?: string; // ss, hy2, tuic
   uuid?: string; // vmess, vless
   alterId?: number; // vmess
-  cipher?: string; // ss, vmess
-  password?: string; // ss, ssr, trojan, hysteria2
-  network?: string; // tcp, ws, grpc, http, h2, kcp
-  wsOpts?: {
-    path?: string;
-    headers?: { Host?: string };
-  };
-  h2Opts?: {
-    host?: string[];
-    path?: string;
-  };
-  httpOpts?: {
-    path?: string[];
-    headers?: { Host?: string[] };
-  };
-  grpcOpts?: {
-    grpcServiceName?: string;
-  };
-  tcpOpts?: {
-    header?: {
-      type?: 'http';
-      request?: {
-        headers?: { Host?: string[] };
-        path?: string[];
-      };
-    };
-  };
-  tls?: boolean | {
-    enabled?: boolean;
-    sni?: string;
-    alpn?: string | string[];
-    skipVerify?: boolean;
-  };
-  udp?: boolean;
-  // SSR
-  protocol?: string;
-  obfs?: string;
-  protocolParam?: string;
-  obfsParam?: string;
-  // SS plugin
-  plugin?: 'obfs' | 'v2ray-plugin';
-  pluginOpts?: {
-    mode?: string;
-    host?: string;
-    tls?: boolean;
-  };
-  // VLESS
-  flow?: string;
-  // Hysteria2
-  auth?: string; // fallback password
-  obfsHysteria?: string;
-  obfsPath?: string; // fallback obfs-path
-  obfsPassword?: string;
-  fingerprint?: string;
-  // Snell
-  psk?: string;
-  obfsSnell?: string;
-  obfsHost?: string;
+  cipher?: string; // ss
+  network?: string; // vmess, vless
+  tls?: boolean;
+  sni?: string;
 }
 
 export default function Home() {
@@ -106,41 +53,12 @@ export default function Home() {
     for (const proxy of proxies) {
       let nodeUri = '';
       const encodedName = encodeURIComponent(proxy.name || 'Unnamed');
-      const net = proxy.network || 'tcp';
-      const isTls = typeof proxy.tls === 'boolean' ? proxy.tls : (proxy.tls as any)?.enabled || false;
-      const sni = (proxy.tls as any)?.sni || proxy.servername || proxy.server || '';
-      const skipVerify = (proxy.tls as any)?.skipVerify || false;
-      const alpn = (proxy.tls as any)?.alpn;
-      let alpnStr = '';
-      if (alpn) {
-        if (Array.isArray(alpn)) alpnStr = `&alpn=${alpn.join(',')}`;
-        else alpnStr = `&alpn=${alpn}`;
-      }
 
-      if (proxy.type === 'vmess') {
-        let host = '';
-        let path = '';
-        let type = 'none';
-        if (net === 'ws') {
-          const wsOpts = proxy['ws-opts'] || proxy.wsOpts || {};
-          host = wsOpts.headers?.Host || proxy['ws-headers']?.Host || proxy.servername || '';
-          path = wsOpts.path || proxy['ws-path'] || proxy.path || '';
-          type = 'ws';
-        } else if (net === 'h2') {
-          const h2Opts = proxy['h2-opts'] || {};
-          host = Array.isArray(h2Opts.host) ? h2Opts.host[0] || '' : h2Opts.host || '';
-          path = h2Opts.path || '';
-          type = 'http';
-        } else if (net === 'http') {
-          const httpOpts = proxy['http-opts'] || {};
-          host = Array.isArray(httpOpts.headers?.Host) ? httpOpts.headers.Host[0] || '' : httpOpts.headers?.Host || '';
-          path = Array.isArray(httpOpts.path) ? httpOpts.path[0] || '' : httpOpts.path || '';
-          type = 'http';
-        } else if (net === 'grpc') {
-          const grpcOpts = proxy['grpc-opts'] || {};
-          path = grpcOpts.grpcServiceName || '';
-          type = 'grpc';
-        }
+      if (proxy.type === 'ss') {
+        const methodPassword = `${proxy.cipher || 'aes-128-gcm'}:${proxy.password || ''}`;
+        const base64Auth = btoa(unescape(encodeURIComponent(methodPassword)));
+        nodeUri = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${encodedName}`;
+      } else if (proxy.type === 'vmess') {
         const vmessConfig = {
           v: '2',
           ps: proxy.name,
@@ -148,124 +66,25 @@ export default function Home() {
           port: proxy.port,
           id: proxy.uuid || '',
           aid: proxy.alterId || 0,
-          net: net,
-          type: type,
-          host: host,
-          path: path,
-          tls: isTls ? 'tls' : '',
-          sni: sni,
-          alpn: alpnStr ? alpnStr.slice(1) : '', // alpn without &, fallback empty str
+          net: proxy.network || 'tcp',
+          type: 'none',
+          host: '',
+          path: '',
+          tls: proxy.tls ? 'tls' : '',
+          sni: proxy.sni || '',
         };
         const vmessStr = JSON.stringify(vmessConfig);
         const base64 = btoa(unescape(encodeURIComponent(vmessStr)));
         nodeUri = `vmess://${base64}`;
-      } else if (proxy.type === 'ss' || proxy.type === 'shadowsocks') {
-        const method = proxy.cipher || 'aes-128-gcm';
-        const password = proxy.password || '';
-        const methodPassword = `${method}:${password}`;
-        const base64Auth = btoa(unescape(encodeURIComponent(methodPassword)));
-        let pluginStr = '';
-        if (proxy.plugin) {
-          const pluginOpts = proxy.pluginOpts || {};
-          if (proxy.plugin === 'obfs') {
-            const opts = [];
-            if (pluginOpts.mode) opts.push(`obfs=${pluginOpts.mode}`);
-            if (pluginOpts.host) opts.push(`obfs-host=${pluginOpts.host}`);
-            pluginStr = `;plugin=obfs-local;${opts.join(';')}`;
-          } else if (proxy.plugin === 'v2ray-plugin') {
-            const opts = [];
-            if (pluginOpts.mode) opts.push(`mode=${pluginOpts.mode}`);
-            if (pluginOpts.host) opts.push(`host=${pluginOpts.host}`);
-            if (pluginOpts.tls) opts.push('tls');
-            pluginStr = `;plugin=v2ray-plugin;${opts.join(';')}`;
-          }
-        }
-        nodeUri = `ss://${base64Auth}@${proxy.server}:${proxy.port}${pluginStr}#${encodedName}`;
-      } else if (proxy.type === 'ssr') {
-        // SSR转标准SS，忽略高级
-        const method = proxy.cipher || 'aes-128-gcm';
-        const password = proxy.password || '';
-        const methodPassword = `${method}:${password}`;
-        const base64Auth = btoa(unescape(encodeURIComponent(methodPassword)));
-        nodeUri = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${encodedName}`;
-      } else if (proxy.type === 'trojan') {
-        let trojanParams = `sni=${encodeURIComponent(sni)}`;
-        if (alpnStr) trojanParams += alpnStr;
-        let networkParams = '';
-        if (net === 'ws') {
-          const wsOpts = proxy['ws-opts'] || proxy.wsOpts || {};
-          const wsHost = wsOpts.headers?.Host || '';
-          const wsPath = wsOpts.path || '';
-          networkParams = `&type=ws`;
-          if (wsHost) networkParams += `&host=${encodeURIComponent(wsHost)}`;
-          if (wsPath) networkParams += `&path=${encodeURIComponent(wsPath)}`;
-        } else if (net === 'grpc') {
-          const grpcOpts = proxy['grpc-opts'] || {};
-          const serviceName = grpcOpts.grpcServiceName || '';
-          networkParams = `&type=grpc`;
-          if (serviceName) networkParams += `&serviceName=${encodeURIComponent(serviceName)}`;
-        }
-        trojanParams += networkParams;
-        if (skipVerify) trojanParams += '&insecure=1';
-        const password = proxy.password || '';
-        nodeUri = `trojan://${encodeURIComponent(password)}@${proxy.server}:${proxy.port}?${trojanParams}#${encodedName}`;
       } else if (proxy.type === 'vless') {
-        let vlessParams = `encryption=none&security=${isTls ? 'tls' : 'none'}`;
-        if (sni) vlessParams += `&sni=${encodeURIComponent(sni)}`;
-        if (alpnStr) vlessParams += alpnStr;
-        let flowParam = proxy.flow ? `&flow=${proxy.flow}` : '';
-        let networkParams = '';
-        if (net === 'ws') {
-          const wsOpts = proxy['ws-opts'] || proxy.wsOpts || {};
-          const wsHost = wsOpts.headers?.Host || '';
-          const wsPath = wsOpts.path || '';
-          networkParams = `&type=ws`;
-          if (wsHost) networkParams += `&host=${encodeURIComponent(wsHost)}`;
-          if (wsPath) networkParams += `&path=${encodeURIComponent(wsPath)}`;
-        } else if (net === 'grpc') {
-          const grpcOpts = proxy['grpc-opts'] || {};
-          const serviceName = grpcOpts.grpcServiceName || '';
-          networkParams = `&type=grpc`;
-          if (serviceName) networkParams += `&serviceName=${encodeURIComponent(serviceName)}`;
-        } else if (net === 'tcp') {
-          const tcpOpts = proxy.tcpOpts || {};
-          if (tcpOpts.header?.type === 'http') {
-            const req = tcpOpts.header.request || {};
-            const tcpHost = Array.isArray(req.headers?.Host) ? req.headers.Host[0] || '' : req.headers?.Host || '';
-            const tcpPath = Array.isArray(req.path) ? req.path[0] || '' : req.path || '';
-            networkParams = `&type=tcp&headerType=http`;
-            if (tcpHost) networkParams += `&host=${encodeURIComponent(tcpHost)}`;
-            if (tcpPath) networkParams += `&path=${encodeURIComponent(tcpPath)}`;
-          }
-        }
-        vlessParams += `&type=${net}${networkParams}${flowParam}`;
-        if (skipVerify) vlessParams += '&allowInsecure=1';
-        const uuid = proxy.uuid || '';
-        nodeUri = `vless://${encodeURIComponent(uuid)}@${proxy.server}:${proxy.port}?${vlessParams}#${encodedName}`;
-      } else if (proxy.type === 'hysteria2' || proxy.type === 'hy2' || proxy.type === 'hysteria') {
-        let hystParams = `sni=${encodeURIComponent(sni)}`;
-        const password = proxy.password || proxy.auth || '';
-        const obfs = proxy.obfsHysteria || proxy.obfs || '';
-        const obfsPassword = proxy.obfsPassword || proxy['obfs-param'] || '';
-        const obfsPath = proxy.obfsPath || '';
-        if (obfs) hystParams += `&obfs=${obfs}`;
-        if (obfsPassword) hystParams += `&obfs-password=${encodeURIComponent(obfsPassword)}`;
-        if (obfsPath) hystParams += `&obfs-path=${encodeURIComponent(obfsPath)}`;
-        if (alpnStr) hystParams += alpnStr;
-        if (skipVerify) hystParams += '&insecure=1';
-        const fingerprint = proxy.fingerprint || '';
-        if (fingerprint) hystParams += `&pinSHA256=${fingerprint}`;
-        nodeUri = `hysteria2://${encodeURIComponent(password)}@${proxy.server}:${proxy.port}?${hystParams}#${encodedName}`;
-      } else if (proxy.type === 'snell') {
-        const psk = proxy.psk || '';
-        const pskB64 = btoa(unescape(encodeURIComponent(psk)));
-        let snellParams = '';
-        const obfsSnell = proxy.obfsSnell || '';
-        if (obfsSnell === 'http') snellParams = 'obfs=http';
-        const obfsHost = proxy.obfsHost || '';
-        if (obfsHost) snellParams += `&obfs-host=${encodeURIComponent(obfsHost)}`;
-        nodeUri = `snell://${pskB64}@${proxy.server}:${proxy.port}?${snellParams}#${encodedName}`;
+        let vlessParams = `encryption=none&security=tls&sni=${encodeURIComponent(proxy.sni || '')}`;
+        nodeUri = `vless://${encodeURIComponent(proxy.uuid || '')}@${proxy.server}:${proxy.port}?${vlessParams}#${encodedName}`;
+      } else if (proxy.type === 'hy2' || proxy.type === 'hysteria2') {
+        nodeUri = `hysteria2://${encodeURIComponent(proxy.password || '')}@${proxy.server}:${proxy.port}?sni=${encodeURIComponent(proxy.sni || '')}#${encodedName}`;
+      } else if (proxy.type === 'tuic') {
+        nodeUri = `tuic://${encodeURIComponent(proxy.password || '')}@${proxy.server}:${proxy.port}?security=tls&sni=${encodeURIComponent(proxy.sni || '')}#${encodedName}`;
       }
+
       if (nodeUri) v2rayNodes.push(nodeUri);
     }
 
@@ -294,7 +113,7 @@ export default function Home() {
     for (const line of lines) {
       try {
         const uri = new URL(line.startsWith('http') || line.startsWith('https') ? line : `https://dummy${line}`);
-        const scheme = uri.protocol.slice(0, -1); // remove :
+        const scheme = uri.protocol.slice(0, -1);
         const name = decodeURIComponent(uri.hash.slice(1)) || 'Unnamed';
         const server = uri.hostname;
         const port = parseInt(uri.port) || 443;
@@ -302,36 +121,9 @@ export default function Home() {
 
         let proxy: Proxy = { name, type: scheme, server, port };
 
-        if (scheme === 'vmess') {
-          const base64 = line.slice(8);
-          const decodedStr = atob(base64);
-          const decoded = JSON.parse(decodedStr);
-          proxy = {
-            ...proxy,
-            type: 'vmess',
-            uuid: decoded.id,
-            alterId: decoded.aid,
-            cipher: decoded.scy || 'auto',
-            network: decoded.net || 'tcp',
-            wsOpts: {
-              path: decoded.path || '',
-              headers: { Host: decoded.host || '' }
-            },
-            tls: decoded.tls === 'tls' || !!decoded.sni,
-          };
-          if (typeof proxy.tls === 'boolean' && proxy.tls) {
-            (proxy.tls as any) = { sni: decoded.sni || server, alpn: decoded.alpn ? decoded.alpn.split(',') : ['http/1.1'] };
-          }
-        } else if (scheme === 'ss') {
+        if (scheme === 'ss') {
           const atIndex = line.indexOf('@');
-          const hashIndex = line.indexOf('#');
           const configPart = line.slice(5, atIndex);
-          let pluginStr = '';
-          if (hashIndex !== -1) {
-            pluginStr = line.slice(atIndex + 1, hashIndex);
-          } else {
-            pluginStr = line.slice(atIndex + 1);
-          }
           const decoded = atob(configPart);
           const colonIndex = decoded.indexOf(':');
           proxy = {
@@ -340,153 +132,44 @@ export default function Home() {
             cipher: decoded.slice(0, colonIndex),
             password: decoded.slice(colonIndex + 1),
           };
-          // Parse plugin
-          if (pluginStr.includes('plugin=')) {
-            const pluginParts = pluginStr.split(';');
-            let currentPlugin = '';
-            const opts: { mode?: string; host?: string; tls?: boolean; } = {};
-            for (const part of pluginParts) {
-              if (part.includes('plugin=')) {
-                currentPlugin = part.split('plugin=')[1];
-                if (currentPlugin === 'obfs-local') proxy.plugin = 'obfs';
-                else if (currentPlugin === 'v2ray-plugin') proxy.plugin = 'v2ray-plugin';
-              } else if (currentPlugin) {
-                if (part.startsWith('obfs=') || part.startsWith('mode=')) {
-                  opts.mode = part.split('=')[1];
-                } else if (part.startsWith('obfs-host=') || part.startsWith('host=')) {
-                  opts.host = part.split('=')[1];
-                } else if (part === 'tls') {
-                  opts.tls = true;
-                }
-              }
-            }
-            proxy.pluginOpts = opts;
-          }
-        } else if (scheme === 'ssr') {
-          // SSR URI: ss://btoa(method:pass:protocol:obfs:b64(protparam):b64(obfsparam))@server:port#name
-          const atIndex = line.indexOf('@');
-          const hashIndex = line.indexOf('#');
-          const configB64 = line.slice(5, atIndex);
-          let serverPortName = line.slice(atIndex + 1);
-          let name = proxy.name; // Use existing name if not overridden
-          if (hashIndex !== -1) {
-            name = decodeURIComponent(serverPortName.slice(hashIndex + 1));
-            serverPortName = serverPortName.slice(0, hashIndex);
-          }
-          const [server, portStr] = serverPortName.split(':');
-          if (server && portStr) {
-            try {
-              const fullConfig = atob(configB64);
-              const configParts = fullConfig.split(':'); // [method, pass, protocol, obfs, protB64, obfsB64]
-              if (configParts.length >= 2) { // At least method:pass
-                const [cipher, password, protocol = 'origin', obfs = 'plain', protParamB64 = '', obfsParamB64 = ''] = configParts;
-                proxy = {
-                  ...proxy,
-                  name,
-                  type: 'ssr',
-                  server,
-                  port: parseInt(portStr),
-                  cipher,
-                  password,
-                  protocol,
-                  obfs,
-                  protocolParam: protParamB64 ? atob(protParamB64) : '',
-                  obfsParam: obfsParamB64 ? atob(obfsParamB64) : '',
-                };
-              }
-            } catch (e) {
-              // Fallback to SS if parse fails
-              proxy.type = 'ss';
-              // Re-parse as SS
-              const ssAtIndex = line.indexOf('@');
-              const ssConfigPart = line.slice(5, ssAtIndex);
-              const ssDecoded = atob(ssConfigPart);
-              const ssColonIndex = ssDecoded.indexOf(':');
-              if (ssColonIndex !== -1) {
-                proxy.cipher = ssDecoded.slice(0, ssColonIndex);
-                proxy.password = ssDecoded.slice(ssColonIndex + 1);
-              }
-            }
-          }
-          // 可选：转成ss忽略高级 for URI generation, but parse full for Clash
-        } else if (scheme === 'trojan') {
+        } else if (scheme === 'vmess') {
+          const base64 = line.slice(8);
+          const decodedStr = atob(base64);
+          const decoded = JSON.parse(decodedStr);
           proxy = {
             ...proxy,
-            type: 'trojan',
-            password: uri.username, // password in username
-            tls: true,
+            type: 'vmess',
+            uuid: decoded.id,
+            alterId: decoded.aid,
+            network: decoded.net || 'tcp',
+            tls: decoded.tls === 'tls',
+            sni: decoded.sni || '',
           };
-          if (searchParams.has('sni')) (proxy.tls as any).sni = searchParams.get('sni');
-          if (searchParams.has('allowInsecure')) (proxy.tls as any).skipVerify = searchParams.get('allowInsecure') === '1';
-          if (searchParams.has('type') && searchParams.get('type') === 'ws') {
-            proxy.network = 'ws';
-            proxy.wsOpts = { path: searchParams.get('path') || '', headers: { Host: searchParams.get('host') || '' } };
-          }
         } else if (scheme === 'vless') {
           proxy = {
             ...proxy,
             type: 'vless',
             uuid: uri.username,
             network: searchParams.get('type') || 'tcp',
-            flow: searchParams.get('flow') || '',
             tls: searchParams.get('security') === 'tls',
+            sni: searchParams.get('sni') || '',
           };
-          if (proxy.tls) {
-            (proxy.tls as any) = { sni: searchParams.get('sni') || server };
-            if (searchParams.has('alpn')) {
-              const alpnVal = searchParams.get('alpn');
-              (proxy.tls as any).alpn = alpnVal ? alpnVal.split(',') : undefined;
-            }
-            if (searchParams.has('allowInsecure')) (proxy.tls as any).skipVerify = searchParams.get('allowInsecure') === '1';
-          }
-          if (proxy.network === 'ws') {
-            proxy.wsOpts = { path: searchParams.get('path') || '', headers: { Host: searchParams.get('host') || '' } };
-          } else if (proxy.network === 'grpc') {
-            proxy.grpcOpts = { grpcServiceName: searchParams.get('serviceName') || '' };
-          } else if (proxy.network === 'tcp' && searchParams.has('headerType') && searchParams.get('headerType') === 'http') {
-            proxy.tcpOpts = {
-              header: {
-                type: 'http',
-                request: {
-                  headers: { Host: [searchParams.get('host') || ''] },
-                  path: [searchParams.get('path') || ''],
-                },
-              },
-            };
-          }
-        } else if (scheme === 'snell') {
-          const psk = atob(uri.username);
+        } else if (scheme === 'hysteria2') {
           proxy = {
             ...proxy,
-            type: 'snell',
-            psk,
-            obfsSnell: searchParams.get('obfs') || '',
-            obfsHost: searchParams.get('obfs-host') || '',
+            type: 'hy2',
+            password: uri.username,
+            sni: searchParams.get('sni') || '',
           };
-        } else if (scheme === 'hysteria' || scheme === 'hysteria2') {
+        } else if (scheme === 'tuic') {
           proxy = {
             ...proxy,
-            type: 'hysteria2',
-            password: uri.username, // or auth
-            obfsHysteria: searchParams.get('obfs') || proxy.obfs || '',
-            obfsPassword: searchParams.get('obfs-password') || '',
-            obfsPath: searchParams.get('obfs-path') || '',
+            type: 'tuic',
+            password: uri.username,
+            sni: searchParams.get('sni') || '',
           };
-          if (searchParams.has('sni')) {
-            proxy.tls = { sni: searchParams.get('sni') || server };
-          }
-          if (searchParams.has('alpn')) {
-            const alpnVal = searchParams.get('alpn');
-            (proxy.tls as any).alpn = alpnVal ? alpnVal.split(',') : ['h3'];
-          }
-          if (searchParams.has('insecure') && searchParams.get('insecure') === '1') {
-            (proxy.tls as any).skipVerify = true;
-          }
-          if (searchParams.has('pinSHA256')) {
-            proxy.fingerprint = searchParams.get('pinSHA256') || undefined;
-          }
         }
-        // 添加更多如 tuic
+
         proxies.push(proxy);
       } catch (e) {
         continue;
@@ -525,8 +208,8 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-gray-100 py-8">
       <div className="max-w-4xl mx-auto px-4">
-        <h1 className="text-3xl font-bold text-center mb-8">Clash ↔ V2ray 订阅转换器 (纯前端版)</h1>
-        <p className="text-center text-gray-600 mb-4">参考 subconverter 实现，支持 VMess/SS/SSR/Trojan/VLESS/Snell/Hysteria 等全面节点类型转换 (mixed base64 URI 列表，兼容 V2rayN)。远程 URL 可能受 CORS 限制，请优先粘贴内容。</p>
+        <h1 className="text-3xl font-bold text-center mb-8">Clash ↔ V2ray 订阅转换器 (简化版)</h1>
+        <p className="text-center text-gray-600 mb-4">支持基本ss/vmess/vless/hy2/tuic转换 (忽略高级opts如ws/path/alpn/plugin, 兼容V2rayN/Clash Meta)。远程URL可能受CORS限制，请优先粘贴内容。</p>
         
         <div className="bg-white p-6 rounded-lg shadow-md">
           <div className="mb-4">
@@ -570,7 +253,7 @@ export default function Home() {
           {result && (
             <div className="mt-4">
               <label className="block text-sm font-medium mb-2">
-                转换结果 {direction === 'clash-to-v2ray' ? '(V2ray base64 订阅，mixed格式：一行base64编码的URI列表，支持全面节点类型)' : '(Clash YAML)'}
+                转换结果 {direction === 'clash-to-v2ray' ? '(V2ray base64 订阅, basic URI: ss://, vmess://, vless://, hysteria2://, tuic://)' : '(Clash YAML)'}
               </label>
               <textarea
                 value={result}
@@ -579,15 +262,15 @@ export default function Home() {
               />
               <p className="text-xs text-gray-500 mt-1">
                 {direction === 'clash-to-v2ray' 
-                  ? '复制此 base64 字符串，直接作为 V2ray 订阅 URL 导入客户端 (如 V2rayN/Clash Meta)，解码后为标准 URI 节点列表 (vmess://, ss:// with plugin, trojan:// with alpn/ws, vless:// with flow, hysteria2:// with obfs/alpn/insecure 等)，支持 emoji 名称、高级配置。SSR 已转换为标准 SS。' 
-                  : '复制此 YAML 内容，保存为 .yaml 文件导入 Clash，支持解析 URI 参数到 ws-opts/tls/pluginOpts/flow/fingerprint 等高级字段。'}
+                  ? '复制此 base64 字符串, 直接作为 V2ray 订阅 URL 导入客户端 (如 V2rayN/Clash Meta), 解码后为基本 URI 节点列表 (ss://, vmess://, vless://, hysteria2://, tuic://), 支持 emoji 名称, 忽略高级配置如 ws/path/alpn/plugin 等。' 
+                  : '复制此 YAML 内容, 保存为 .yaml 文件导入 Clash, 支持基本解析 URI 参数到 type/server/port/password/uuid/alterId/cipher/network/tls/sni 等。'}
               </p>
             </div>
           )}
         </div>
 
         <div className="mt-8 text-center text-sm text-gray-500">
-          <p>部署到 Vercel 后，即可在线使用。参考 subconverter 开源项目实现。</p>
+          <p>部署到 Vercel 后, 即可在线使用。支持基本 ss/vmess/vless/hy2/tuic 转换。</p>
         </div>
       </div>
     </main>

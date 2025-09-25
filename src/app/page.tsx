@@ -433,7 +433,7 @@ export default function Home() {
             (proxy.tls as any).skipVerify = true;
           }
           if (searchParams.has('pinSHA256')) {
-            proxy.fingerprint = searchParams.get('pinSHA256');
+            proxy.fingerprint = searchParams.get('pinSHA256') || undefined;
           }
         }
         // 添加更多如 tuic

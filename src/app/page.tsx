@@ -209,25 +209,52 @@ export default function Home() {
             password: decoded.slice(colonIndex + 1),
           };
         } else if (scheme === 'ssr') {
-          // SSR URI: ss://method:pass@server:port:protocol:obfs:base64(protocol-param):base64(obfs-param)#name
-          const parts = line.slice(5).split('@')[1].split(':');
-          const [serverPort, protocol, obfs, protParamB64, obfsParamB64] = parts;
-          const [serv, prt] = serverPort.split(':');
-          const methodPass = atob(line.slice(5, line.indexOf('@'))); // method:pass
-          const [cipher, password] = methodPass.split(':');
-          proxy = {
-            ...proxy,
-            type: 'ssr',
-            cipher,
-            password,
-            server: serv,
-            port: parseInt(prt),
-            protocol,
-            obfs,
-            protocolParam: protParamB64 ? atob(protParamB64) : '',
-            obfsParam: obfsParamB64 ? atob(obfsParamB64) : '',
-          };
-          // 可选：转成ss忽略高级
+          // SSR URI: ss://btoa(method:pass:protocol:obfs:b64(protparam):b64(obfsparam))@server:port#name
+          const atIndex = line.indexOf('@');
+          const hashIndex = line.indexOf('#');
+          const configB64 = line.slice(5, atIndex);
+          let serverPortName = line.slice(atIndex + 1);
+          let name = proxy.name; // Use existing name if not overridden
+          if (hashIndex !== -1) {
+            name = decodeURIComponent(serverPortName.slice(hashIndex + 1));
+            serverPortName = serverPortName.slice(0, hashIndex);
+          }
+          const [server, portStr] = serverPortName.split(':');
+          if (server && portStr) {
+            try {
+              const fullConfig = atob(configB64);
+              const configParts = fullConfig.split(':'); // [method, pass, protocol, obfs, protB64, obfsB64]
+              if (configParts.length >= 2) { // At least method:pass
+                const [cipher, password, protocol = 'origin', obfs = 'plain', protParamB64 = '', obfsParamB64 = ''] = configParts;
+                proxy = {
+                  ...proxy,
+                  name,
+                  type: 'ssr',
+                  server,
+                  port: parseInt(portStr),
+                  cipher,
+                  password,
+                  protocol,
+                  obfs,
+                  protocolParam: protParamB64 ? atob(protParamB64) : '',
+                  obfsParam: obfsParamB64 ? atob(obfsParamB64) : '',
+                };
+              }
+            } catch (e) {
+              // Fallback to SS if parse fails
+              proxy.type = 'ss';
+              // Re-parse as SS
+              const ssAtIndex = line.indexOf('@');
+              const ssConfigPart = line.slice(5, ssAtIndex);
+              const ssDecoded = atob(ssConfigPart);
+              const ssColonIndex = ssDecoded.indexOf(':');
+              if (ssColonIndex !== -1) {
+                proxy.cipher = ssDecoded.slice(0, ssColonIndex);
+                proxy.password = ssDecoded.slice(ssColonIndex + 1);
+              }
+            }
+          }
+          // 可选：转成ss忽略高级 for URI generation, but parse full for Clash
         } else if (scheme === 'trojan') {
           proxy = {
             ...proxy,

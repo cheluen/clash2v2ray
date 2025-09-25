@@ -61,6 +61,7 @@ interface Proxy {
   // Hysteria2
   auth?: string; // fallback password
   obfsHysteria?: string;
+  obfsPath?: string; // fallback obfs-path
   obfsPassword?: string;
   fingerprint?: string;
   // Snell
@@ -153,7 +154,7 @@ export default function Home() {
           path: path,
           tls: isTls ? 'tls' : '',
           sni: sni,
-          alpn: alpnStr ? alpnStr.slice(1) : '', // alpn without &
+          alpn: alpnStr ? alpnStr.slice(1) : '', // alpn without &, fallback empty str
         };
         const vmessStr = JSON.stringify(vmessConfig);
         const base64 = btoa(unescape(encodeURIComponent(vmessStr)));
@@ -244,10 +245,12 @@ export default function Home() {
       } else if (proxy.type === 'hysteria2' || proxy.type === 'hy2' || proxy.type === 'hysteria') {
         let hystParams = `sni=${encodeURIComponent(sni)}`;
         const password = proxy.password || proxy.auth || '';
-        const obfs = proxy.obfs || '';
+        const obfs = proxy.obfsHysteria || proxy.obfs || '';
         const obfsPassword = proxy.obfsPassword || proxy['obfs-param'] || '';
+        const obfsPath = proxy.obfsPath || '';
         if (obfs) hystParams += `&obfs=${obfs}`;
         if (obfsPassword) hystParams += `&obfs-password=${encodeURIComponent(obfsPassword)}`;
+        if (obfsPath) hystParams += `&obfs-path=${encodeURIComponent(obfsPath)}`;
         if (alpnStr) hystParams += alpnStr;
         if (skipVerify) hystParams += '&insecure=1';
         const fingerprint = proxy.fingerprint || '';
@@ -321,7 +324,14 @@ export default function Home() {
           }
         } else if (scheme === 'ss') {
           const atIndex = line.indexOf('@');
+          const hashIndex = line.indexOf('#');
           const configPart = line.slice(5, atIndex);
+          let pluginStr = '';
+          if (hashIndex !== -1) {
+            pluginStr = line.slice(atIndex + 1, hashIndex);
+          } else {
+            pluginStr = line.slice(atIndex + 1);
+          }
           const decoded = atob(configPart);
           const colonIndex = decoded.indexOf(':');
           proxy = {
@@ -330,6 +340,28 @@ export default function Home() {
             cipher: decoded.slice(0, colonIndex),
             password: decoded.slice(colonIndex + 1),
           };
+          // Parse plugin
+          if (pluginStr.includes('plugin=')) {
+            const pluginParts = pluginStr.split(';');
+            let currentPlugin = '';
+            const opts: { mode?: string; host?: string; tls?: boolean; } = {};
+            for (const part of pluginParts) {
+              if (part.includes('plugin=')) {
+                currentPlugin = part.split('plugin=')[1];
+                if (currentPlugin === 'obfs-local') proxy.plugin = 'obfs';
+                else if (currentPlugin === 'v2ray-plugin') proxy.plugin = 'v2ray-plugin';
+              } else if (currentPlugin) {
+                if (part.startsWith('obfs=') || part.startsWith('mode=')) {
+                  opts.mode = part.split('=')[1];
+                } else if (part.startsWith('obfs-host=') || part.startsWith('host=')) {
+                  opts.host = part.split('=')[1];
+                } else if (part === 'tls') {
+                  opts.tls = true;
+                }
+              }
+            }
+            proxy.pluginOpts = opts;
+          }
         } else if (scheme === 'ssr') {
           // SSR URI: ss://btoa(method:pass:protocol:obfs:b64(protparam):b64(obfsparam))@server:port#name
           const atIndex = line.indexOf('@');
@@ -396,14 +428,31 @@ export default function Home() {
             type: 'vless',
             uuid: uri.username,
             network: searchParams.get('type') || 'tcp',
+            flow: searchParams.get('flow') || '',
             tls: searchParams.get('security') === 'tls',
           };
           if (proxy.tls) {
             (proxy.tls as any) = { sni: searchParams.get('sni') || server };
+            if (searchParams.has('alpn')) {
+              const alpnVal = searchParams.get('alpn');
+              (proxy.tls as any).alpn = alpnVal ? alpnVal.split(',') : undefined;
+            }
             if (searchParams.has('allowInsecure')) (proxy.tls as any).skipVerify = searchParams.get('allowInsecure') === '1';
           }
           if (proxy.network === 'ws') {
             proxy.wsOpts = { path: searchParams.get('path') || '', headers: { Host: searchParams.get('host') || '' } };
+          } else if (proxy.network === 'grpc') {
+            proxy.grpcOpts = { grpcServiceName: searchParams.get('serviceName') || '' };
+          } else if (proxy.network === 'tcp' && searchParams.has('headerType') && searchParams.get('headerType') === 'http') {
+            proxy.tcpOpts = {
+              header: {
+                type: 'http',
+                request: {
+                  headers: { Host: [searchParams.get('host') || ''] },
+                  path: [searchParams.get('path') || ''],
+                },
+              },
+            };
           }
         } else if (scheme === 'snell') {
           const psk = atob(uri.username);
@@ -419,8 +468,9 @@ export default function Home() {
             ...proxy,
             type: 'hysteria2',
             password: uri.username, // or auth
-            obfsHysteria: searchParams.get('obfs') || '',
+            obfsHysteria: searchParams.get('obfs') || proxy.obfs || '',
             obfsPassword: searchParams.get('obfs-password') || '',
+            obfsPath: searchParams.get('obfs-path') || '',
           };
           if (searchParams.has('sni')) {
             proxy.tls = { sni: searchParams.get('sni') || server };

@@ -5,39 +5,68 @@ import yaml from 'js-yaml';
 
 interface Proxy {
   name: string;
-  type: string; // vmess, ss, ssr, trojan, vless, snell, hysteria, shadowsocks
+  type: string; // vmess, ss, ssr, trojan, vless, snell, hysteria2, hy2, shadowsocks
   server: string;
   port: number;
   uuid?: string; // vmess, vless
   alterId?: number; // vmess
   cipher?: string; // ss, vmess
-  password?: string; // ss, ssr, trojan
-  network?: string; // vmess: tcp, ws, grpc, http, kcp, quic
+  password?: string; // ss, ssr, trojan, hysteria2
+  network?: string; // tcp, ws, grpc, http, h2, kcp
   wsOpts?: {
     path?: string;
     headers?: { Host?: string };
-  }; // vmess ws/grpc/http
+  };
+  h2Opts?: {
+    host?: string[];
+    path?: string;
+  };
+  httpOpts?: {
+    path?: string[];
+    headers?: { Host?: string[] };
+  };
+  grpcOpts?: {
+    grpcServiceName?: string;
+  };
+  tcpOpts?: {
+    header?: {
+      type?: 'http';
+      request?: {
+        headers?: { Host?: string[] };
+        path?: string[];
+      };
+    };
+  };
   tls?: boolean | {
     enabled?: boolean;
     sni?: string;
-    alpn?: string[];
+    alpn?: string | string[];
     skipVerify?: boolean;
-  }; // vmess, trojan, vless
-  udp?: boolean; // general
-  // SSR specific
-  protocol?: string; // origin, auth_sha1_v4 等 (忽略 for URI, but parse)
-  obfs?: string; // plain, http_simple 等 (忽略)
+  };
+  udp?: boolean;
+  // SSR
+  protocol?: string;
+  obfs?: string;
   protocolParam?: string;
   obfsParam?: string;
-  // Trojan specific (tls above covers)
+  // SS plugin
+  plugin?: 'obfs' | 'v2ray-plugin';
+  pluginOpts?: {
+    mode?: string;
+    host?: string;
+    tls?: boolean;
+  };
+  // VLESS
+  flow?: string;
+  // Hysteria2
+  auth?: string; // fallback password
+  obfsHysteria?: string;
+  obfsPassword?: string;
+  fingerprint?: string;
   // Snell
   psk?: string;
-  obfsSnell?: string; // http, tls
+  obfsSnell?: string;
   obfsHost?: string;
-  // Hysteria
-  auth?: string;
-  obfsHysteria?: string; // ws
-  obfsPath?: string;
 }
 
 export default function Home() {
@@ -75,17 +104,42 @@ export default function Home() {
 
     for (const proxy of proxies) {
       let nodeUri = '';
-      const encodedName = encodeURIComponent(proxy.name);
-      const isTls = typeof proxy.tls === 'boolean' ? proxy.tls : (proxy.tls as any)?.enabled || false;
-      const sni = typeof proxy.tls === 'object' ? (proxy.tls as any).sni : proxy.server;
-      const skipVerify = typeof proxy.tls === 'object' ? (proxy.tls as any).skipVerify : false;
-      const wsOpts = proxy['ws-opts'] || proxy.wsOpts || {};
-      const path = wsOpts.path || '';
-      const host = wsOpts.headers?.Host || '';
+      const encodedName = encodeURIComponent(proxy.name || 'Unnamed');
       const net = proxy.network || 'tcp';
-      const type = net === 'ws' ? 'ws' : net === 'grpc' ? 'grpc' : net === 'http' ? 'http' : 'none';
+      const isTls = typeof proxy.tls === 'boolean' ? proxy.tls : (proxy.tls as any)?.enabled || false;
+      const sni = (proxy.tls as any)?.sni || proxy.servername || proxy.server || '';
+      const skipVerify = (proxy.tls as any)?.skipVerify || false;
+      const alpn = (proxy.tls as any)?.alpn;
+      let alpnStr = '';
+      if (alpn) {
+        if (Array.isArray(alpn)) alpnStr = `&alpn=${alpn.join(',')}`;
+        else alpnStr = `&alpn=${alpn}`;
+      }
 
       if (proxy.type === 'vmess') {
+        let host = '';
+        let path = '';
+        let type = 'none';
+        if (net === 'ws') {
+          const wsOpts = proxy['ws-opts'] || proxy.wsOpts || {};
+          host = wsOpts.headers?.Host || proxy['ws-headers']?.Host || proxy.servername || '';
+          path = wsOpts.path || proxy['ws-path'] || proxy.path || '';
+          type = 'ws';
+        } else if (net === 'h2') {
+          const h2Opts = proxy['h2-opts'] || {};
+          host = Array.isArray(h2Opts.host) ? h2Opts.host[0] || '' : h2Opts.host || '';
+          path = h2Opts.path || '';
+          type = 'http';
+        } else if (net === 'http') {
+          const httpOpts = proxy['http-opts'] || {};
+          host = Array.isArray(httpOpts.headers?.Host) ? httpOpts.headers.Host[0] || '' : httpOpts.headers?.Host || '';
+          path = Array.isArray(httpOpts.path) ? httpOpts.path[0] || '' : httpOpts.path || '';
+          type = 'http';
+        } else if (net === 'grpc') {
+          const grpcOpts = proxy['grpc-opts'] || {};
+          path = grpcOpts.grpcServiceName || '';
+          type = 'grpc';
+        }
         const vmessConfig = {
           v: '2',
           ps: proxy.name,
@@ -93,60 +147,128 @@ export default function Home() {
           port: proxy.port,
           id: proxy.uuid || '',
           aid: proxy.alterId || 0,
-          scy: proxy.cipher || 'auto',
           net: net,
           type: type,
           host: host,
           path: path,
           tls: isTls ? 'tls' : '',
           sni: sni,
-          alpn: (proxy.tls as any)?.alpn || ['http/1.1'],
+          alpn: alpnStr ? alpnStr.slice(1) : '', // alpn without &
         };
         const vmessStr = JSON.stringify(vmessConfig);
         const base64 = btoa(unescape(encodeURIComponent(vmessStr)));
         nodeUri = `vmess://${base64}`;
       } else if (proxy.type === 'ss' || proxy.type === 'shadowsocks') {
-        const methodPassword = `${proxy.cipher || 'aes-128-gcm'}:${proxy.password || ''}`;
+        const method = proxy.cipher || 'aes-128-gcm';
+        const password = proxy.password || '';
+        const methodPassword = `${method}:${password}`;
         const base64Auth = btoa(unescape(encodeURIComponent(methodPassword)));
-        nodeUri = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${encodedName}`;
+        let pluginStr = '';
+        if (proxy.plugin) {
+          const pluginOpts = proxy.pluginOpts || {};
+          if (proxy.plugin === 'obfs') {
+            const opts = [];
+            if (pluginOpts.mode) opts.push(`obfs=${pluginOpts.mode}`);
+            if (pluginOpts.host) opts.push(`obfs-host=${pluginOpts.host}`);
+            pluginStr = `;plugin=obfs-local;${opts.join(';')}`;
+          } else if (proxy.plugin === 'v2ray-plugin') {
+            const opts = [];
+            if (pluginOpts.mode) opts.push(`mode=${pluginOpts.mode}`);
+            if (pluginOpts.host) opts.push(`host=${pluginOpts.host}`);
+            if (pluginOpts.tls) opts.push('tls');
+            pluginStr = `;plugin=v2ray-plugin;${opts.join(';')}`;
+          }
+        }
+        nodeUri = `ss://${base64Auth}@${proxy.server}:${proxy.port}${pluginStr}#${encodedName}`;
       } else if (proxy.type === 'ssr') {
-        // SSR转标准SS，忽略obfs/protocol/obfs-param/protocol-param
-        const methodPassword = `${proxy.cipher || 'aes-128-gcm'}:${proxy.password || ''}`;
+        // SSR转标准SS，忽略高级
+        const method = proxy.cipher || 'aes-128-gcm';
+        const password = proxy.password || '';
+        const methodPassword = `${method}:${password}`;
         const base64Auth = btoa(unescape(encodeURIComponent(methodPassword)));
         nodeUri = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${encodedName}`;
       } else if (proxy.type === 'trojan') {
-        let trojanParams = `security=tls&sni=${encodeURIComponent(sni || '')}`;
-        if (skipVerify) trojanParams += '&allowInsecure=1';
+        let trojanParams = `sni=${encodeURIComponent(sni)}`;
+        if (alpnStr) trojanParams += alpnStr;
+        let networkParams = '';
         if (net === 'ws') {
-          trojanParams += `&type=ws&host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}`;
+          const wsOpts = proxy['ws-opts'] || proxy.wsOpts || {};
+          const wsHost = wsOpts.headers?.Host || '';
+          const wsPath = wsOpts.path || '';
+          networkParams = `&type=ws`;
+          if (wsHost) networkParams += `&host=${encodeURIComponent(wsHost)}`;
+          if (wsPath) networkParams += `&path=${encodeURIComponent(wsPath)}`;
+        } else if (net === 'grpc') {
+          const grpcOpts = proxy['grpc-opts'] || {};
+          const serviceName = grpcOpts.grpcServiceName || '';
+          networkParams = `&type=grpc`;
+          if (serviceName) networkParams += `&serviceName=${encodeURIComponent(serviceName)}`;
         }
-        nodeUri = `trojan://${encodeURIComponent(proxy.password || '')}@${proxy.server}:${proxy.port}?${trojanParams}#${encodedName}`;
+        trojanParams += networkParams;
+        if (skipVerify) trojanParams += '&insecure=1';
+        const password = proxy.password || '';
+        nodeUri = `trojan://${encodeURIComponent(password)}@${proxy.server}:${proxy.port}?${trojanParams}#${encodedName}`;
       } else if (proxy.type === 'vless') {
-        let vlessParams = `encryption=none&security=tls&sni=${encodeURIComponent(sni || '')}`;
-        if (skipVerify) vlessParams += '&allowInsecure=1';
+        let vlessParams = `encryption=none&security=${isTls ? 'tls' : 'none'}`;
+        if (sni) vlessParams += `&sni=${encodeURIComponent(sni)}`;
+        if (alpnStr) vlessParams += alpnStr;
+        let flowParam = proxy.flow ? `&flow=${proxy.flow}` : '';
+        let networkParams = '';
         if (net === 'ws') {
-          vlessParams += `&type=ws&host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}`;
+          const wsOpts = proxy['ws-opts'] || proxy.wsOpts || {};
+          const wsHost = wsOpts.headers?.Host || '';
+          const wsPath = wsOpts.path || '';
+          networkParams = `&type=ws`;
+          if (wsHost) networkParams += `&host=${encodeURIComponent(wsHost)}`;
+          if (wsPath) networkParams += `&path=${encodeURIComponent(wsPath)}`;
+        } else if (net === 'grpc') {
+          const grpcOpts = proxy['grpc-opts'] || {};
+          const serviceName = grpcOpts.grpcServiceName || '';
+          networkParams = `&type=grpc`;
+          if (serviceName) networkParams += `&serviceName=${encodeURIComponent(serviceName)}`;
+        } else if (net === 'tcp') {
+          const tcpOpts = proxy.tcpOpts || {};
+          if (tcpOpts.header?.type === 'http') {
+            const req = tcpOpts.header.request || {};
+            const tcpHost = Array.isArray(req.headers?.Host) ? req.headers.Host[0] || '' : req.headers?.Host || '';
+            const tcpPath = Array.isArray(req.path) ? req.path[0] || '' : req.path || '';
+            networkParams = `&type=tcp&headerType=http`;
+            if (tcpHost) networkParams += `&host=${encodeURIComponent(tcpHost)}`;
+            if (tcpPath) networkParams += `&path=${encodeURIComponent(tcpPath)}`;
+          }
         }
-        nodeUri = `vless://${encodeURIComponent(proxy.uuid || '')}@${proxy.server}:${proxy.port}?${vlessParams}#${encodedName}`;
+        vlessParams += `&type=${net}${networkParams}${flowParam}`;
+        if (skipVerify) vlessParams += '&allowInsecure=1';
+        const uuid = proxy.uuid || '';
+        nodeUri = `vless://${encodeURIComponent(uuid)}@${proxy.server}:${proxy.port}?${vlessParams}#${encodedName}`;
+      } else if (proxy.type === 'hysteria2' || proxy.type === 'hy2' || proxy.type === 'hysteria') {
+        let hystParams = `sni=${encodeURIComponent(sni)}`;
+        const password = proxy.password || proxy.auth || '';
+        const obfs = proxy.obfs || '';
+        const obfsPassword = proxy.obfsPassword || proxy['obfs-param'] || '';
+        if (obfs) hystParams += `&obfs=${obfs}`;
+        if (obfsPassword) hystParams += `&obfs-password=${encodeURIComponent(obfsPassword)}`;
+        if (alpnStr) hystParams += alpnStr;
+        if (skipVerify) hystParams += '&insecure=1';
+        const fingerprint = proxy.fingerprint || '';
+        if (fingerprint) hystParams += `&pinSHA256=${fingerprint}`;
+        nodeUri = `hysteria2://${encodeURIComponent(password)}@${proxy.server}:${proxy.port}?${hystParams}#${encodedName}`;
       } else if (proxy.type === 'snell') {
-        const pskBase64 = btoa(unescape(encodeURIComponent(proxy.psk || '')));
+        const psk = proxy.psk || '';
+        const pskB64 = btoa(unescape(encodeURIComponent(psk)));
         let snellParams = '';
-        if (proxy.obfsSnell === 'http') snellParams = 'obfs=http';
-        if (proxy.obfsHost) snellParams += `&obfs-host=${encodeURIComponent(proxy.obfsHost)}`;
-        nodeUri = `snell://${pskBase64}@${proxy.server}:${proxy.port}?${snellParams}#${encodedName}`;
-      } else if (proxy.type === 'hysteria' || proxy.type === 'hysteria2') {
-        let hystParams = `sni=${encodeURIComponent(sni || '')}`;
-        if (proxy.auth) hystParams += `&auth=${encodeURIComponent(proxy.auth)}`;
-        if (proxy.obfsHysteria === 'ws' && proxy.obfsPath) hystParams += `&obfs=ws&obfs-path=${encodeURIComponent(proxy.obfsPath)}`;
-        nodeUri = `hysteria://${encodeURIComponent(proxy.auth || '')}@${proxy.server}:${proxy.port}?${hystParams}#${encodedName}`;
+        const obfsSnell = proxy.obfsSnell || '';
+        if (obfsSnell === 'http') snellParams = 'obfs=http';
+        const obfsHost = proxy.obfsHost || '';
+        if (obfsHost) snellParams += `&obfs-host=${encodeURIComponent(obfsHost)}`;
+        nodeUri = `snell://${pskB64}@${proxy.server}:${proxy.port}?${snellParams}#${encodedName}`;
       }
-      // 支持更多如 tuic, wireguard if Clash supports
       if (nodeUri) v2rayNodes.push(nodeUri);
     }
 
     if (v2rayNodes.length === 0) throw new Error('未找到有效节点');
     const uriList = v2rayNodes.join('\n');
-    return btoa(unescape(encodeURIComponent(uriList))); // base64订阅 (mixed格式)
+    return btoa(unescape(encodeURIComponent(uriList)));
   };
 
   const v2rayToClash = async (inputContent: string): Promise<string> => {
@@ -292,15 +414,27 @@ export default function Home() {
             obfsSnell: searchParams.get('obfs') || '',
             obfsHost: searchParams.get('obfs-host') || '',
           };
-        } else if (scheme === 'hysteria') {
+        } else if (scheme === 'hysteria' || scheme === 'hysteria2') {
           proxy = {
             ...proxy,
-            type: 'hysteria',
-            auth: uri.username,
+            type: 'hysteria2',
+            password: uri.username, // or auth
             obfsHysteria: searchParams.get('obfs') || '',
-            obfsPath: searchParams.get('obfs-path') || '',
+            obfsPassword: searchParams.get('obfs-password') || '',
           };
-          if (searchParams.has('sni')) (proxy.tls as any) = { sni: searchParams.get('sni') };
+          if (searchParams.has('sni')) {
+            proxy.tls = { sni: searchParams.get('sni') || server };
+          }
+          if (searchParams.has('alpn')) {
+            const alpnVal = searchParams.get('alpn');
+            (proxy.tls as any).alpn = alpnVal ? alpnVal.split(',') : ['h3'];
+          }
+          if (searchParams.has('insecure') && searchParams.get('insecure') === '1') {
+            (proxy.tls as any).skipVerify = true;
+          }
+          if (searchParams.has('pinSHA256')) {
+            proxy.fingerprint = searchParams.get('pinSHA256');
+          }
         }
         // 添加更多如 tuic
         proxies.push(proxy);
@@ -395,8 +529,8 @@ export default function Home() {
               />
               <p className="text-xs text-gray-500 mt-1">
                 {direction === 'clash-to-v2ray' 
-                  ? '复制此 base64 字符串，直接作为 V2ray 订阅 URL 导入客户端 (如 V2rayN/Clash Meta)，解码后为标准 URI 节点列表 (vmess://, ss://, trojan:// 等)，支持 emoji 名称、WS/TLS 等高级配置。SSR 已转换为标准 SS。' 
-                  : '复制此 YAML 内容，保存为 .yaml 文件导入 Clash，支持解析高级 URI 参数到 ws-opts/tls 等。'}
+                  ? '复制此 base64 字符串，直接作为 V2ray 订阅 URL 导入客户端 (如 V2rayN/Clash Meta)，解码后为标准 URI 节点列表 (vmess://, ss:// with plugin, trojan:// with alpn/ws, vless:// with flow, hysteria2:// with obfs/alpn/insecure 等)，支持 emoji 名称、高级配置。SSR 已转换为标准 SS。' 
+                  : '复制此 YAML 内容，保存为 .yaml 文件导入 Clash，支持解析 URI 参数到 ws-opts/tls/pluginOpts/flow/fingerprint 等高级字段。'}
               </p>
             </div>
           )}

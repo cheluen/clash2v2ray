@@ -66,9 +66,11 @@ export async function POST(request: NextRequest) {
           const vmessStr = JSON.stringify(vmessConfig);
           const base64 = Buffer.from(vmessStr).toString('base64');
           v2rayNodes.push(`vmess://${base64}`);
-        } else if (proxy.type === 'ss') {
-          // Shadowsocks转换简化
-          const ssStr = `${proxy.name}://${proxy.cipher}:${Buffer.from(proxy.password, 'utf8').toString('base64')}@${proxy.server}:${proxy.port}`;
+        } else if (proxy.type === 'ss' || proxy.type === 'ssr') {
+          // Shadowsocks/SSR转换到标准SS (忽略SSR的obfs/protocol)
+          const methodPassword = `${proxy.cipher}:${proxy.password}`;
+          const base64Auth = Buffer.from(methodPassword, 'utf8').toString('base64');
+          const ssStr = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${proxy.name}`;
           v2rayNodes.push(ssStr);
         }
         // 可以添加更多类型如trojan, vless等

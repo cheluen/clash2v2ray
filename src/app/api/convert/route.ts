@@ -18,6 +18,7 @@ interface Proxy {
   network?: string;
   wsPath?: string;
   tls?: boolean;
+  password?: string;
   // 添加更多字段根据需要
 }
 

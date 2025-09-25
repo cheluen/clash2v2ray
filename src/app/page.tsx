@@ -5,17 +5,39 @@ import yaml from 'js-yaml';
 
 interface Proxy {
   name: string;
-  type: string;
+  type: string; // vmess, ss, ssr, trojan, vless, snell, hysteria, shadowsocks
   server: string;
   port: number;
-  uuid?: string;
-  alterId?: number;
-  cipher?: string;
-  network?: string;
-  wsPath?: string;
-  tls?: boolean;
-  password?: string;
-  // 添加更多字段根据需要，如 obfs, protocol for SSR (但忽略)
+  uuid?: string; // vmess, vless
+  alterId?: number; // vmess
+  cipher?: string; // ss, vmess
+  password?: string; // ss, ssr, trojan
+  network?: string; // vmess: tcp, ws, grpc, http, kcp, quic
+  wsOpts?: {
+    path?: string;
+    headers?: { Host?: string };
+  }; // vmess ws/grpc/http
+  tls?: boolean | {
+    enabled?: boolean;
+    sni?: string;
+    alpn?: string[];
+    skipVerify?: boolean;
+  }; // vmess, trojan, vless
+  udp?: boolean; // general
+  // SSR specific
+  protocol?: string; // origin, auth_sha1_v4 等 (忽略 for URI, but parse)
+  obfs?: string; // plain, http_simple 等 (忽略)
+  protocolParam?: string;
+  obfsParam?: string;
+  // Trojan specific (tls above covers)
+  // Snell
+  psk?: string;
+  obfsSnell?: string; // http, tls
+  obfsHost?: string;
+  // Hysteria
+  auth?: string;
+  obfsHysteria?: string; // ws
+  obfsPath?: string;
 }
 
 export default function Home() {
@@ -53,42 +75,78 @@ export default function Home() {
 
     for (const proxy of proxies) {
       let nodeUri = '';
+      const encodedName = encodeURIComponent(proxy.name);
+      const isTls = typeof proxy.tls === 'boolean' ? proxy.tls : (proxy.tls as any)?.enabled || false;
+      const sni = typeof proxy.tls === 'object' ? (proxy.tls as any).sni : proxy.server;
+      const skipVerify = typeof proxy.tls === 'object' ? (proxy.tls as any).skipVerify : false;
+      const wsOpts = proxy['ws-opts'] || proxy.wsOpts || {};
+      const path = wsOpts.path || '';
+      const host = wsOpts.headers?.Host || '';
+      const net = proxy.network || 'tcp';
+      const type = net === 'ws' ? 'ws' : net === 'grpc' ? 'grpc' : net === 'http' ? 'http' : 'none';
+
       if (proxy.type === 'vmess') {
         const vmessConfig = {
           v: '2',
           ps: proxy.name,
           add: proxy.server,
           port: proxy.port,
-          id: proxy.uuid,
+          id: proxy.uuid || '',
           aid: proxy.alterId || 0,
-          net: proxy.network || 'tcp',
-          type: 'none',
-          host: '',
-          path: proxy.wsPath || '',
-          tls: proxy.tls ? 'tls' : '',
+          scy: proxy.cipher || 'auto',
+          net: net,
+          type: type,
+          host: host,
+          path: path,
+          tls: isTls ? 'tls' : '',
+          sni: sni,
+          alpn: (proxy.tls as any)?.alpn || ['http/1.1'],
         };
         const vmessStr = JSON.stringify(vmessConfig);
-        const base64 = btoa(unescape(encodeURIComponent(vmessStr))); // 处理Unicode
+        const base64 = btoa(unescape(encodeURIComponent(vmessStr)));
         nodeUri = `vmess://${base64}`;
-      } else if (proxy.type === 'ss') {
-        const methodPassword = `${proxy.cipher}:${proxy.password}`;
+      } else if (proxy.type === 'ss' || proxy.type === 'shadowsocks') {
+        const methodPassword = `${proxy.cipher || 'aes-128-gcm'}:${proxy.password || ''}`;
         const base64Auth = btoa(unescape(encodeURIComponent(methodPassword)));
-        const encodedName = encodeURIComponent(proxy.name);
         nodeUri = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${encodedName}`;
       } else if (proxy.type === 'ssr') {
-        // SSR转标准SS，忽略obfs/protocol
-        const methodPassword = `${proxy.cipher}:${proxy.password}`;
+        // SSR转标准SS，忽略obfs/protocol/obfs-param/protocol-param
+        const methodPassword = `${proxy.cipher || 'aes-128-gcm'}:${proxy.password || ''}`;
         const base64Auth = btoa(unescape(encodeURIComponent(methodPassword)));
-        const encodedName = encodeURIComponent(proxy.name);
         nodeUri = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${encodedName}`;
+      } else if (proxy.type === 'trojan') {
+        let trojanParams = `security=tls&sni=${encodeURIComponent(sni || '')}`;
+        if (skipVerify) trojanParams += '&allowInsecure=1';
+        if (net === 'ws') {
+          trojanParams += `&type=ws&host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}`;
+        }
+        nodeUri = `trojan://${encodeURIComponent(proxy.password || '')}@${proxy.server}:${proxy.port}?${trojanParams}#${encodedName}`;
+      } else if (proxy.type === 'vless') {
+        let vlessParams = `encryption=none&security=tls&sni=${encodeURIComponent(sni || '')}`;
+        if (skipVerify) vlessParams += '&allowInsecure=1';
+        if (net === 'ws') {
+          vlessParams += `&type=ws&host=${encodeURIComponent(host)}&path=${encodeURIComponent(path)}`;
+        }
+        nodeUri = `vless://${encodeURIComponent(proxy.uuid || '')}@${proxy.server}:${proxy.port}?${vlessParams}#${encodedName}`;
+      } else if (proxy.type === 'snell') {
+        const pskBase64 = btoa(unescape(encodeURIComponent(proxy.psk || '')));
+        let snellParams = '';
+        if (proxy.obfsSnell === 'http') snellParams = 'obfs=http';
+        if (proxy.obfsHost) snellParams += `&obfs-host=${encodeURIComponent(proxy.obfsHost)}`;
+        nodeUri = `snell://${pskBase64}@${proxy.server}:${proxy.port}?${snellParams}#${encodedName}`;
+      } else if (proxy.type === 'hysteria' || proxy.type === 'hysteria2') {
+        let hystParams = `sni=${encodeURIComponent(sni || '')}`;
+        if (proxy.auth) hystParams += `&auth=${encodeURIComponent(proxy.auth)}`;
+        if (proxy.obfsHysteria === 'ws' && proxy.obfsPath) hystParams += `&obfs=ws&obfs-path=${encodeURIComponent(proxy.obfsPath)}`;
+        nodeUri = `hysteria://${encodeURIComponent(proxy.auth || '')}@${proxy.server}:${proxy.port}?${hystParams}#${encodedName}`;
       }
-      // 可以添加trojan, vless等
+      // 支持更多如 tuic, wireguard if Clash supports
       if (nodeUri) v2rayNodes.push(nodeUri);
     }
 
     if (v2rayNodes.length === 0) throw new Error('未找到有效节点');
     const uriList = v2rayNodes.join('\n');
-    return btoa(unescape(encodeURIComponent(uriList))); // base64订阅
+    return btoa(unescape(encodeURIComponent(uriList))); // base64订阅 (mixed格式)
   };
 
   const v2rayToClash = async (inputContent: string): Promise<string> => {
@@ -109,65 +167,119 @@ export default function Home() {
     const proxies: Proxy[] = [];
 
     for (const line of lines) {
-      if (line.startsWith('vmess://')) {
-        try {
+      try {
+        const uri = new URL(line.startsWith('http') || line.startsWith('https') ? line : `https://dummy${line}`);
+        const scheme = uri.protocol.slice(0, -1); // remove :
+        const name = decodeURIComponent(uri.hash.slice(1)) || 'Unnamed';
+        const server = uri.hostname;
+        const port = parseInt(uri.port) || 443;
+        const searchParams = uri.searchParams;
+
+        let proxy: Proxy = { name, type: scheme, server, port };
+
+        if (scheme === 'vmess') {
           const base64 = line.slice(8);
           const decodedStr = atob(base64);
           const decoded = JSON.parse(decodedStr);
-          const proxy: Proxy = {
-            name: decoded.ps || 'Unnamed',
+          proxy = {
+            ...proxy,
             type: 'vmess',
-            server: decoded.add,
-            port: parseInt(decoded.port),
             uuid: decoded.id,
             alterId: decoded.aid,
-            cipher: 'auto',
+            cipher: decoded.scy || 'auto',
             network: decoded.net || 'tcp',
-            wsPath: decoded.path,
-            tls: decoded.tls === 'tls',
+            wsOpts: {
+              path: decoded.path || '',
+              headers: { Host: decoded.host || '' }
+            },
+            tls: decoded.tls === 'tls' || !!decoded.sni,
           };
-          proxies.push(proxy);
-        } catch (e) {
-          continue;
-        }
-      } else if (line.startsWith('ss://')) {
-        const uri = line.slice(5);
-        const hashIndex = uri.indexOf('#');
-        let name = 'Unnamed';
-        let serverPart = uri;
-        if (hashIndex !== -1) {
-          name = decodeURIComponent(uri.slice(hashIndex + 1));
-          serverPart = uri.slice(0, hashIndex);
-        }
-        const atIndex = serverPart.indexOf('@');
-        if (atIndex !== -1) {
-          const configPart = serverPart.slice(0, atIndex);
-          const serverPort = serverPart.slice(atIndex + 1);
-          const [server, portStr] = serverPort.split(':');
-          if (server && portStr) {
-            try {
-              const decoded = atob(configPart);
-              const colonIndex = decoded.indexOf(':');
-              if (colonIndex !== -1) {
-                const method = decoded.slice(0, colonIndex);
-                const password = decoded.slice(colonIndex + 1);
-                const proxy: Proxy = {
-                  name,
-                  type: 'ss',
-                  server,
-                  port: parseInt(portStr, 10),
-                  cipher: method,
-                  password,
-                };
-                proxies.push(proxy);
-              }
-            } catch (e) {
-              continue;
-            }
+          if (typeof proxy.tls === 'boolean' && proxy.tls) {
+            (proxy.tls as any) = { sni: decoded.sni || server, alpn: decoded.alpn ? decoded.alpn.split(',') : ['http/1.1'] };
           }
+        } else if (scheme === 'ss') {
+          const atIndex = line.indexOf('@');
+          const configPart = line.slice(5, atIndex);
+          const decoded = atob(configPart);
+          const colonIndex = decoded.indexOf(':');
+          proxy = {
+            ...proxy,
+            type: 'ss',
+            cipher: decoded.slice(0, colonIndex),
+            password: decoded.slice(colonIndex + 1),
+          };
+        } else if (scheme === 'ssr') {
+          // SSR URI: ss://method:pass@server:port:protocol:obfs:base64(protocol-param):base64(obfs-param)#name
+          const parts = line.slice(5).split('@')[1].split(':');
+          const [serverPort, protocol, obfs, protParamB64, obfsParamB64] = parts;
+          const [serv, prt] = serverPort.split(':');
+          const methodPass = atob(line.slice(5, line.indexOf('@'))); // method:pass
+          const [cipher, password] = methodPass.split(':');
+          proxy = {
+            ...proxy,
+            type: 'ssr',
+            cipher,
+            password,
+            server: serv,
+            port: parseInt(prt),
+            protocol,
+            obfs,
+            protocolParam: protParamB64 ? atob(protParamB64) : '',
+            obfsParam: obfsParamB64 ? atob(obfsParamB64) : '',
+          };
+          // 可选：转成ss忽略高级
+        } else if (scheme === 'trojan') {
+          proxy = {
+            ...proxy,
+            type: 'trojan',
+            password: uri.username, // password in username
+            tls: true,
+          };
+          if (searchParams.has('sni')) (proxy.tls as any).sni = searchParams.get('sni');
+          if (searchParams.has('allowInsecure')) (proxy.tls as any).skipVerify = searchParams.get('allowInsecure') === '1';
+          if (searchParams.has('type') && searchParams.get('type') === 'ws') {
+            proxy.network = 'ws';
+            proxy.wsOpts = { path: searchParams.get('path') || '', headers: { Host: searchParams.get('host') || '' } };
+          }
+        } else if (scheme === 'vless') {
+          proxy = {
+            ...proxy,
+            type: 'vless',
+            uuid: uri.username,
+            network: searchParams.get('type') || 'tcp',
+            tls: searchParams.get('security') === 'tls',
+          };
+          if (proxy.tls) {
+            (proxy.tls as any) = { sni: searchParams.get('sni') || server };
+            if (searchParams.has('allowInsecure')) (proxy.tls as any).skipVerify = searchParams.get('allowInsecure') === '1';
+          }
+          if (proxy.network === 'ws') {
+            proxy.wsOpts = { path: searchParams.get('path') || '', headers: { Host: searchParams.get('host') || '' } };
+          }
+        } else if (scheme === 'snell') {
+          const psk = atob(uri.username);
+          proxy = {
+            ...proxy,
+            type: 'snell',
+            psk,
+            obfsSnell: searchParams.get('obfs') || '',
+            obfsHost: searchParams.get('obfs-host') || '',
+          };
+        } else if (scheme === 'hysteria') {
+          proxy = {
+            ...proxy,
+            type: 'hysteria',
+            auth: uri.username,
+            obfsHysteria: searchParams.get('obfs') || '',
+            obfsPath: searchParams.get('obfs-path') || '',
+          };
+          if (searchParams.has('sni')) (proxy.tls as any) = { sni: searchParams.get('sni') };
         }
+        // 添加更多如 tuic
+        proxies.push(proxy);
+      } catch (e) {
+        continue;
       }
-      // 可以添加更多类型
     }
 
     if (proxies.length === 0) throw new Error('未找到有效节点');
@@ -203,7 +315,7 @@ export default function Home() {
     <main className="min-h-screen bg-gray-100 py-8">
       <div className="max-w-4xl mx-auto px-4">
         <h1 className="text-3xl font-bold text-center mb-8">Clash ↔ V2ray 订阅转换器 (纯前端版)</h1>
-        <p className="text-center text-gray-600 mb-4">参考 subconverter 实现，支持 VMess/SS/SSR 转换。远程 URL 可能受 CORS 限制，请优先粘贴内容。</p>
+        <p className="text-center text-gray-600 mb-4">参考 subconverter 实现，支持 VMess/SS/SSR/Trojan/VLESS/Snell/Hysteria 等全面节点类型转换 (mixed base64 URI 列表，兼容 V2rayN)。远程 URL 可能受 CORS 限制，请优先粘贴内容。</p>
         
         <div className="bg-white p-6 rounded-lg shadow-md">
           <div className="mb-4">
@@ -247,7 +359,7 @@ export default function Home() {
           {result && (
             <div className="mt-4">
               <label className="block text-sm font-medium mb-2">
-                转换结果 {direction === 'clash-to-v2ray' ? '(V2ray base64 订阅，一行base64编码的URI列表)' : '(Clash YAML)'}
+                转换结果 {direction === 'clash-to-v2ray' ? '(V2ray base64 订阅，mixed格式：一行base64编码的URI列表，支持全面节点类型)' : '(Clash YAML)'}
               </label>
               <textarea
                 value={result}
@@ -256,8 +368,8 @@ export default function Home() {
               />
               <p className="text-xs text-gray-500 mt-1">
                 {direction === 'clash-to-v2ray' 
-                  ? '复制此 base64 字符串，直接作为 V2ray 订阅 URL 导入客户端 (如 V2rayN)，解码后为 ss:// 或 vmess:// 节点列表，支持 emoji 名称。SSR 已转换为标准 SS。' 
-                  : '复制此 YAML 内容，保存为 .yaml 文件导入 Clash。'}
+                  ? '复制此 base64 字符串，直接作为 V2ray 订阅 URL 导入客户端 (如 V2rayN/Clash Meta)，解码后为标准 URI 节点列表 (vmess://, ss://, trojan:// 等)，支持 emoji 名称、WS/TLS 等高级配置。SSR 已转换为标准 SS。' 
+                  : '复制此 YAML 内容，保存为 .yaml 文件导入 Clash，支持解析高级 URI 参数到 ws-opts/tls 等。'}
               </p>
             </div>
           )}

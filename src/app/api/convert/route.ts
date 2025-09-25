@@ -76,7 +76,9 @@ export async function POST(request: NextRequest) {
         // 可以添加更多类型如trojan, vless等
       }
 
-      result = v2rayNodes.join('\n');
+      // 输出base64编码的订阅链接
+      const uriList = v2rayNodes.join('\n');
+      result = Buffer.from(uriList, 'utf8').toString('base64');
     } else {
       // V2ray base64 to Clash YAML
       const lines = content.split('\n').filter(line => line.trim());

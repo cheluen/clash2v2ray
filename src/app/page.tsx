@@ -5,16 +5,18 @@ import yaml from 'js-yaml';
 
 interface Proxy {
   name: string;
-  type: string; // ss, vmess, vless, hy2, tuic
+  type: string; // ss, vmess, vless, hy2, tuic, ssr
   server: string;
   port: number;
-  password?: string; // ss, hy2, tuic
+  password?: string; // ss, hy2, tuic, ssr
   uuid?: string; // vmess, vless
   alterId?: number; // vmess
-  cipher?: string; // ss
+  cipher?: string; // ss, ssr
   network?: string; // vmess, vless
   tls?: boolean;
   sni?: string;
+  protocol?: string; // ssr
+  obfs?: string; // ssr
 }
 
 export default function Home() {
@@ -54,7 +56,7 @@ export default function Home() {
       let nodeUri = '';
       const encodedName = encodeURIComponent(proxy.name || 'Unnamed');
 
-      if (proxy.type === 'ss') {
+      if (proxy.type === 'ss' || proxy.type === 'ssr') {
         const methodPassword = `${proxy.cipher || 'aes-128-gcm'}:${proxy.password || ''}`;
         const base64Auth = btoa(unescape(encodeURIComponent(methodPassword)));
         nodeUri = `ss://${base64Auth}@${proxy.server}:${proxy.port}#${encodedName}`;
